@@ -406,6 +406,7 @@ S: Supported
 F: hw/riscv/cbqri_bandwidth.c
 F: hw/riscv/cbqri_capacity.c
 F: include/hw/riscv/cbqri.h
+F: tests/qtest/riscv-cbqri-test.c
 
 RENESAS RX CPUs
 R: Yoshinori Sato <yoshinori.sato@nifty.com>
