@@ -328,7 +328,7 @@ static void build_rqsc(GArray *table_data,
     RQSC rqsc[10];
     int i = 0;
 
-    AcpiTable table = { .sig = "RQSC", .rev = 0, .oem_id = s->oem_id,
+    AcpiTable table = { .sig = "RQSC", .rev = 1, .oem_id = s->oem_id,
                         .oem_table_id = s->oem_table_id };
 
     acpi_table_begin(&table, table_data);
@@ -348,7 +348,7 @@ static void build_rqsc(GArray *table_data,
         /* Reserved */
         build_append_int_noprefix(table_data, 0, 1);
         /* Length */
-        build_append_int_noprefix(table_data, 32, 2);
+        build_append_int_noprefix(table_data, 44, 2);
         /* Controller register interface address */
         build_append_gas(table_data,
                 AML_AS_SYSTEM_MEMORY,
@@ -357,9 +357,9 @@ static void build_rqsc(GArray *table_data,
                 4,
                 rqsc[i].mmio_base);
         /* RCID Count */
-        build_append_int_noprefix(table_data, rqsc[i].rcidCount, 4);
+        build_append_int_noprefix(table_data, rqsc[i].rcidCount, 2);
         /* MCID Count */
-        build_append_int_noprefix(table_data, rqsc[i].mcidCount, 4);
+        build_append_int_noprefix(table_data, rqsc[i].mcidCount, 2);
         /* Controller Flags*/
         build_append_int_noprefix(table_data, 0, 2);
         /* Number of Resources hard coded to 1 for QEMU */
@@ -379,18 +379,16 @@ static void build_rqsc(GArray *table_data,
         /* Resource ID Type  - Setting to the same as Controller Type for now */
         build_append_int_noprefix(table_data, rqsc[i].controllerType, 1);
         /*
-         * The AML code that generates that PPTT table uses the cache
-         * controller mmio_base address as the Cache ID.
-         *
-         * TODO: Similar plumbing still needs to be done to correlate
-         * the memory controller to Proximity Domain in the SRAT table
+         * The PPTT table uses the cache controller MMIO base as the cache
+         * ID. The virt machine has one proximity domain, numbered zero.
          */
+        uint64_t resource_id = rqsc[i].controllerType == 0 ?
+                               rqsc[i].mmio_base : 0;
+
         fprintf(stderr, "[QEMU] %s(): Controller %d: Resource ID 1 = 0x%lx\n",
-                __func__, i, rqsc[i].mmio_base);
+                __func__, i, resource_id);
         /* Resource ID 1 DWORD 1 CacheID or Proximity Domain */
-        build_append_int_noprefix(table_data, rqsc[i].mmio_base, 4);
-        /* Resource ID 1 DWORD 2 Reserved */
-        build_append_int_noprefix(table_data, 0, 4);
+        build_append_int_noprefix(table_data, resource_id, 8);
         /* Resrouce ID 2 */
         build_append_int_noprefix(table_data, 0, 4);
     }
