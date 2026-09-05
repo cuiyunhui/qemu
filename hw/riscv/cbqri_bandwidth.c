@@ -30,6 +30,8 @@
 #include "target/riscv/cpu.h"
 #include "hw/riscv/cbqri.h"
 
+#define CBQRI_INACTIVE_ENTRY_VERSION 0x11
+
 /* Encodings of `AT` field */
 enum {
     BC_AT_DATA = 0,
@@ -159,6 +161,8 @@ typedef struct RiscvCbqriBandwidthState {
     bool supports_alloc_op_config_limit;
     bool supports_alloc_op_read_limit;
 
+    bool supports_inactive_entry;
+
     bool supports_mon_op_config_event;
     bool supports_mon_op_read_counter;
 
@@ -171,6 +175,14 @@ typedef struct RiscvCbqriBandwidthState {
 #define RISCV_CBQRI_BC(obj) \
     OBJECT_CHECK(RiscvCbqriBandwidthState, (obj), TYPE_RISCV_CBQRI_BC)
 
+static unsigned int get_num_ats(RiscvCbqriBandwidthState *bc)
+{
+    if (bc->supports_at_code) {
+        return BC_AT_CODE + 1;
+    }
+    return 1;
+}
+
 static BandwidthAllocation *get_bw_alloc(RiscvCbqriBandwidthState *bc,
                                          uint32_t rcid, uint32_t at)
 {
@@ -179,14 +191,31 @@ static BandwidthAllocation *get_bw_alloc(RiscvCbqriBandwidthState *bc,
      * allocation. The first one is used to hold the BC_BW_ALLOC register
      * content, followed by respective records for each AT per RCID.
      */
+    unsigned int nb_ats = get_num_ats(bc);
 
-    unsigned int nb_ats = 0;
-    nb_ats += !!bc->supports_at_data;
-    nb_ats += !!bc->supports_at_code;
-    nb_ats = MAX(nb_ats, 1);
     assert(at < nb_ats);
 
     return &bc->bw_allocations[1 + rcid * nb_ats + at];
+}
+
+static uint64_t bandwidth_reserved_sum(RiscvCbqriBandwidthState *bc)
+{
+    unsigned int nb_ats = get_num_ats(bc);
+    uint64_t total = 0;
+    uint32_t rcid;
+    uint32_t at;
+
+    for (rcid = 0; rcid < bc->nb_rcids; rcid++) {
+        for (at = 0; at < nb_ats; at++) {
+            BandwidthAllocation *alloc = get_bw_alloc(bc, rcid, at);
+
+            if (!alloc->useShared) {
+                total += alloc->Rbwb;
+            }
+        }
+    }
+
+    return total;
 }
 
 static uint32_t bandwidth_config(RiscvCbqriBandwidthState *bc,
@@ -194,19 +223,36 @@ static uint32_t bandwidth_config(RiscvCbqriBandwidthState *bc,
                                  bool *busy)
 {
     BandwidthAllocation *bw_alloc = get_bw_alloc(bc, rcid, at);
+    BandwidthAllocation *new_alloc = &bc->bw_allocations[0];
+    uint64_t reserved = bandwidth_reserved_sum(bc);
 
     /*
      * Bandwidth is allocated in multiples of bandwidth blocks, and the
-     * value in Rbwb must be at least 1 and must not exceed MRBWB value.
+     * value in Rbwb must be at least 1 unless this controller supports the
+     * inactive-entry extension. Rbwb is ignored for shared allocations.
      */
-    if (bc->bw_allocations[0].Rbwb < 1) {
-        return BC_ALLOC_STATUS_INVAL_OP;
-    } else if (bc->bw_allocations[0].Rbwb > bc->mrbwb) {
-        return BC_ALLOC_STATUS_INVAL_OP;
+    if (!new_alloc->useShared && new_alloc->Rbwb < 1) {
+        if (!bc->supports_inactive_entry || new_alloc->Mweight != 0) {
+            return BC_ALLOC_STATUS_INVAL_BLKS;
+        }
+    }
+
+    if (!bw_alloc->useShared) {
+        reserved -= bw_alloc->Rbwb;
+    }
+    if (!new_alloc->useShared) {
+        if (new_alloc->Rbwb > bc->mrbwb) {
+            return BC_ALLOC_STATUS_INVAL_BLKS;
+        }
+
+        reserved += new_alloc->Rbwb;
+        if (reserved > bc->mrbwb) {
+            return BC_ALLOC_STATUS_INVAL_BLKS;
+        }
     }
 
     /* Save contents of BC_BW_ALLOC register for this rcid and at */
-    *bw_alloc = bc->bw_allocations[0];
+    *bw_alloc = *new_alloc;
     return BC_ALLOC_STATUS_SUCCESS;
 }
 
@@ -435,10 +481,15 @@ static uint64_t riscv_cbqri_bc_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case A_BC_CAPABILITIES:
-        value = FIELD_DP64(value, BC_CAPABILITIES, VER_MAJOR,
-                           RISCV_CBQRI_VERSION_MAJOR);
-        value = FIELD_DP64(value, BC_CAPABILITIES, VER_MINOR,
-                           RISCV_CBQRI_VERSION_MINOR);
+        if (bc->supports_inactive_entry) {
+            value = FIELD_DP64(value, BC_CAPABILITIES, VER,
+                               CBQRI_INACTIVE_ENTRY_VERSION);
+        } else {
+            value = FIELD_DP64(value, BC_CAPABILITIES, VER_MAJOR,
+                               RISCV_CBQRI_VERSION_MAJOR);
+            value = FIELD_DP64(value, BC_CAPABILITIES, VER_MINOR,
+                               RISCV_CBQRI_VERSION_MINOR);
+        }
         value = FIELD_DP64(value, BC_CAPABILITIES, RPFX, 0);
         value = FIELD_DP64(value, BC_CAPABILITIES, P, 0);
         value = FIELD_DP64(value, BC_CAPABILITIES, NBWBLKS, bc->nbwblks);
@@ -512,6 +563,7 @@ static const MemoryRegionOps riscv_cbqri_bc_ops = {
 static void riscv_cbqri_bc_realize(DeviceState *dev, Error **errp)
 {
     RiscvCbqriBandwidthState *bc = RISCV_CBQRI_BC(dev);
+    unsigned int bw_alloc_size;
 
     if (!bc->mmio_base) {
         error_setg(errp, "mmio_base property not set");
@@ -522,8 +574,7 @@ static void riscv_cbqri_bc_realize(DeviceState *dev, Error **errp)
     bc->mon_counters = g_new0(MonitorCounter, bc->nb_mcids);
 
     assert(bc->bw_allocations == NULL);
-    BandwidthAllocation *bw_alloc_end = get_bw_alloc(bc, bc->nb_rcids, 0);
-    unsigned int bw_alloc_size = bw_alloc_end - bc->bw_allocations;
+    bw_alloc_size = 1 + bc->nb_rcids * get_num_ats(bc);
     bc->bw_allocations = g_new0(BandwidthAllocation, bw_alloc_size);
 
     memory_region_init_io(&bc->mmio, OBJECT(dev), &riscv_cbqri_bc_ops,
@@ -558,6 +609,9 @@ static const Property riscv_cbqri_bc_properties[] = {
                      supports_alloc_op_config_limit, true),
     DEFINE_PROP_BOOL("alloc_op_read_limit", RiscvCbqriBandwidthState,
                      supports_alloc_op_read_limit, true),
+
+    DEFINE_PROP_BOOL("inactive-entry", RiscvCbqriBandwidthState,
+                     supports_inactive_entry, false),
 
     DEFINE_PROP_BOOL("mon_op_config_event", RiscvCbqriBandwidthState,
                      supports_mon_op_config_event, true),
@@ -607,6 +661,7 @@ DeviceState *riscv_cbqri_bc_create(hwaddr addr,
     qdev_prop_set_string(dev, "target", target_name);
     qdev_prop_set_uint16(dev, "max_mcids", caps->nb_mcids);
     qdev_prop_set_uint16(dev, "max_rcids", caps->nb_rcids);
+    qdev_prop_set_uint16(dev, "mrbwb", caps->mrbwb);
     qdev_prop_set_uint16(dev, "nbwblks", caps->nbwblks);
 
     qdev_prop_set_bit(dev, "at_data",
@@ -617,6 +672,8 @@ DeviceState *riscv_cbqri_bc_create(hwaddr addr,
                       caps->supports_alloc_op_config_limit);
     qdev_prop_set_bit(dev, "alloc_op_read_limit",
                       caps->supports_alloc_op_read_limit);
+    qdev_prop_set_bit(dev, "inactive-entry",
+                      caps->supports_inactive_entry);
     qdev_prop_set_bit(dev, "mon_op_config_event",
                       caps->supports_mon_op_config_event);
     qdev_prop_set_bit(dev, "mon_op_read_counter",
