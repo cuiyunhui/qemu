@@ -1,5 +1,6 @@
 # cpu_helper.c
 riscv_trap(uint64_t hartid, bool async, uint64_t cause, uint64_t epc, uint64_t tval, const char *desc) "hart:%"PRId64", async:%d, cause:%"PRId64", epc:0x%"PRIx64", tval:0x%"PRIx64", desc=%s"
+riscv_napot_translation(uint64_t addr, int napot_bits, bool first_stage, bool two_stage) "address=0x%"PRIx64" napot_bits=%d first_stage=%d two_stage=%d"
 
 # pmp.c
 pmpcfg_csr_read(uint64_t mhartid, uint32_t reg_index, uint64_t val) "hart %" PRIu64 ": read reg%" PRIu32", val: 0x%" PRIx64

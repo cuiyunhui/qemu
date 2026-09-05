@@ -1146,11 +1146,34 @@ restart:
     /* For superpage mappings, make a fake leaf PTE for the TLB's benefit. */
     target_ulong vpn = addr >> PGSHIFT;
 
-    if (riscv_cpu_cfg(env)->ext_svnapot && (pte & PTE_N)) {
-        napot_bits = ctzl(ppn) + 1;
-        if ((i != (levels - 1)) || (napot_bits != 4)) {
+    if (pte & PTE_N) {
+        if (!riscv_cpu_cfg(env)->ext_svnapot) {
             return TRANSLATE_FAIL;
         }
+
+        napot_bits = ctzl(ppn) + 1;
+        if (i != (levels - 1)) {
+            return TRANSLATE_FAIL;
+        }
+
+        switch (napot_bits) {
+        case 2:
+            if (!riscv_cpu_cfg(env)->ext_svnapot16k) {
+                return TRANSLATE_FAIL;
+            }
+            break;
+        case 3:
+            if (!riscv_cpu_cfg(env)->ext_svnapot32k) {
+                return TRANSLATE_FAIL;
+            }
+            break;
+        case 4:
+            break;
+        default:
+            return TRANSLATE_FAIL;
+        }
+
+        trace_riscv_napot_translation(addr, napot_bits, first_stage, two_stage);
     }
 
     napot_mask = (1 << napot_bits) - 1;

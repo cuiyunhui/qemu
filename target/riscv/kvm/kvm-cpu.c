@@ -317,6 +317,10 @@ static KVMCPUConfig kvm_multi_ext_cfgs[] = {
     KVM_EXT_CFG("sstc", ext_sstc, KVM_RISCV_ISA_EXT_SSTC),
     KVM_EXT_CFG("svinval", ext_svinval, KVM_RISCV_ISA_EXT_SVINVAL),
     KVM_EXT_CFG("svnapot", ext_svnapot, KVM_RISCV_ISA_EXT_SVNAPOT),
+    KVM_EXT_CFG("svnapot16k", ext_svnapot16k,
+                KVM_RISCV_ISA_EXT_SVNAPOT16K),
+    KVM_EXT_CFG("svnapot32k", ext_svnapot32k,
+                KVM_RISCV_ISA_EXT_SVNAPOT32K),
     KVM_EXT_CFG("svpbmt", ext_svpbmt, KVM_RISCV_ISA_EXT_SVPBMT),
 };
 

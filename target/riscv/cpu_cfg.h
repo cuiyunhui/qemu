@@ -80,6 +80,8 @@ struct RISCVCPUConfig {
     bool ext_svadu;
     bool ext_svinval;
     bool ext_svnapot;
+    bool ext_svnapot16k;
+    bool ext_svnapot32k;
     bool ext_svpbmt;
     bool ext_zdinx;
     bool ext_zaamo;

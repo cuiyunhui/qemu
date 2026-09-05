@@ -468,6 +468,16 @@ void riscv_cpu_validate_set_extensions(RISCVCPU *cpu, Error **errp)
         return;
     }
 
+    if (cpu->cfg.ext_svnapot16k && !cpu->cfg.ext_svnapot) {
+        error_setg(errp, "Svnapot16k extension requires Svnapot");
+        return;
+    }
+
+    if (cpu->cfg.ext_svnapot32k && !cpu->cfg.ext_svnapot) {
+        error_setg(errp, "Svnapot32k extension requires Svnapot");
+        return;
+    }
+
     if (cpu->cfg.ext_zfa && !riscv_has_ext(env, RVF)) {
         error_setg(errp, "Zfa extension requires F extension");
         return;
