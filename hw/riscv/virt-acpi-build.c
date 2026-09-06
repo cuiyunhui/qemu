@@ -998,56 +998,47 @@ build_srat(GArray *table_data, BIOSLinker *linker, RISCVVirtState *vms)
 static void pptt_setup(GArray *table_data, BIOSLinker *linker, MachineState *ms,
                        const char *oem_id, const char *oem_table_id)
 {
-    CPUCaches default_cache_info = {
-        .l1d_cache = &(CPUCacheInfo) {
+    CPUCoreCaches default_cache_info[] = {
+        {
             .type = DATA_CACHE,
             .size = 64 * KiB,
-            .line_size = 64,
+            .level = 1,
+            .linesize = 64,
             .associativity = 4,
             .sets = 256,
             .attributes = 0x02,
-            .id = 0x1D,
         },
-        .l1i_cache = &(CPUCacheInfo) {
+        {
             .type = INSTRUCTION_CACHE,
             .size = 64 * KiB,
-            .line_size = 64,
+            .level = 1,
+            .linesize = 64,
             .associativity = 4,
             .sets = 256,
             .attributes = 0x04,
-            .id = 0x1E,
         },
-        .l2_cluster1_cache = &(CPUCacheInfo) {
+        {
             .type = UNIFIED_CACHE,
             .size = 750 * KiB,
-            .line_size = 64,
+            .level = 2,
+            .linesize = 64,
             .associativity = 12,
             .sets = 1000,
             .attributes = 0x0a,
-            .id = 0x4821000,
         },
-        .l2_cluster2_cache = &(CPUCacheInfo) {
-            .type = UNIFIED_CACHE,
-            .size = 750 * KiB,
-            .line_size = 64,
-            .associativity = 12,
-            .sets = 1000,
-            .attributes = 0x0a,
-            .id = 0x4820000,
-        },
-        .l3_cache = &(CPUCacheInfo) {
+        {
             .type = UNIFIED_CACHE,
             .size = 3 * MiB,
-            .line_size = 64,
+            .level = 3,
+            .linesize = 64,
             .associativity = 16,
             .sets = 4096,
             .attributes = 0x0a,
-            .id = 0x482b000,
         },
     };
 
     build_pptt(table_data, linker, ms, oem_id, oem_table_id,
-               &default_cache_info);
+               ARRAY_SIZE(default_cache_info), default_cache_info);
 }
 
 static void virt_acpi_build(RISCVVirtState *s, AcpiBuildTables *tables)
