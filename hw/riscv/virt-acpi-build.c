@@ -371,17 +371,16 @@ static void build_rqsc(GArray *table_data,
         build_append_int_noprefix(table_data, 0, 2);
         /* Reserved */
         build_append_int_noprefix(table_data, 0, 1);
-        /* Resource ID Type  - Setting to the same as Controller Type for now */
+        /* Resource ID type matches the controller type. */
         build_append_int_noprefix(table_data, rqsc[i].controllerType, 1);
         /*
-         * Derive a resource ID from the mmio_base page offset so the RQSC
-         * table resource IDs match the CPUCacheInfo IDs used in the PPTT table.
-         *
-         * TODO: Similar plumbing still needs to be done to correlate
-         * the memory controller to Proximity Domain in the SRAT table
+         * Cache controllers use the PPTT cache ID derived from the MMIO
+         * page offset. The virt machine has one memory proximity domain,
+         * numbered zero, for bandwidth controllers.
          */
         uint64_t offset = rqsc[i].mmio_base & 0x000F000;
-        uint64_t id = (offset >> 12) + 0x40;
+        uint64_t id = rqsc[i].controllerType == 0 ?
+                      (offset >> 12) + 0x40 : 0;
         /* Resource ID 1 DWORD 1 CacheID or Proximity Domain */
         build_append_int_noprefix(table_data, id, 4);
         /* Resource ID 1 DWORD 2 Reserved */
