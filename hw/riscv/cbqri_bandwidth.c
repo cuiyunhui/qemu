@@ -31,6 +31,7 @@
 #include "hw/riscv/cbqri.h"
 
 #define CBQRI_INACTIVE_ENTRY_VERSION 0x11
+#define CBQRI_ID_MAP_VERSION 0x12
 
 /* Encodings of `AT` field */
 enum {
@@ -47,6 +48,8 @@ FIELD(BC_CAPABILITIES, NBWBLKS, 8, 16);
 FIELD(BC_CAPABILITIES, RPFX, 24, 1);
 FIELD(BC_CAPABILITIES, P, 25, 4);
 FIELD(BC_CAPABILITIES, MRBWB, 32, 16);
+FIELD(BC_CAPABILITIES, RCID_MAP, 62, 1);
+FIELD(BC_CAPABILITIES, MCID_MAP, 63, 1);
 
 /* Usage monitoring control */
 REG64(BC_MON_CTL, 8);
@@ -79,6 +82,7 @@ enum {
     BC_MON_CTL_STATUS_INVAL_MCID = 3,
     BC_MON_CTL_STATUS_INVAL_EVT_ID = 4,
     BC_MON_CTL_STATUS_INVAL_AT = 5,
+    BC_MON_CTL_STATUS_NO_COUNTER = 6,
 };
 
 /* Monitoring counter value */
@@ -117,13 +121,42 @@ FIELD(BC_BW_ALLOC, Mweight, 20, 8);
 FIELD(BC_BW_ALLOC, sharedAT, 28, 3);
 FIELD(BC_BW_ALLOC, useShared, 31, 1);
 
+/* Sparse RCID mapping control */
+REG64(BC_RCID_MAP_CTL, 40);
+FIELD(BC_RCID_MAP_CTL, OP, 0, 5);
+FIELD(BC_RCID_MAP_CTL, REQ_RCID, 8, 12);
+FIELD(BC_RCID_MAP_CTL, INT_RCID, 20, 12);
+FIELD(BC_RCID_MAP_CTL, STATUS, 32, 7);
+FIELD(BC_RCID_MAP_CTL, BUSY, 39, 1);
+
+enum {
+    BC_RCID_MAP_OP_CONFIG = 1,
+    BC_RCID_MAP_OP_READ = 2,
+};
+
+enum {
+    BC_RCID_MAP_STATUS_SUCCESS = 1,
+    BC_RCID_MAP_STATUS_INVAL_OP = 2,
+    BC_RCID_MAP_STATUS_INVAL_REQ_RCID = 3,
+    BC_RCID_MAP_STATUS_INVAL_INT_RCID = 4,
+    BC_RCID_MAP_STATUS_INT_RCID_BUSY = 5,
+    BC_RCID_MAP_STATUS_CONSTRAINT = 6,
+};
+
 
 typedef struct MonitorCounter {
     uint64_t ctr_val;
+    uint16_t mcid_tag;
     int at;
     int evt_id;
     bool active;
+    bool tag_valid;
 } MonitorCounter;
+
+typedef struct RcidTag {
+    uint16_t req_rcid;
+    bool valid;
+} RcidTag;
 
 typedef struct BandwidthAllocation {
     uint32_t Rbwb:16;
@@ -141,9 +174,11 @@ typedef struct RiscvCbqriBandwidthState {
     uint64_t bc_mon_ctr_val;
     uint64_t bc_alloc_ctl;
     uint64_t bc_bw_alloc;
+    uint64_t bc_rcid_map_ctl;
 
     MonitorCounter *mon_counters;
     BandwidthAllocation *bw_allocations;
+    RcidTag *rcid_tags;
 
     /* properties */
 
@@ -162,6 +197,8 @@ typedef struct RiscvCbqriBandwidthState {
     bool supports_alloc_op_read_limit;
 
     bool supports_inactive_entry;
+    bool supports_rcid_map;
+    bool supports_mcid_map;
 
     bool supports_mon_op_config_event;
     bool supports_mon_op_read_counter;
@@ -198,6 +235,74 @@ static BandwidthAllocation *get_bw_alloc(RiscvCbqriBandwidthState *bc,
     return &bc->bw_allocations[1 + rcid * nb_ats + at];
 }
 
+static int find_rcid_tag(RiscvCbqriBandwidthState *bc, uint16_t req_rcid)
+{
+    uint32_t int_rcid;
+
+    if (req_rcid == 0) {
+        return 0;
+    }
+
+    for (int_rcid = 1; int_rcid < bc->nb_rcids; int_rcid++) {
+        if (bc->rcid_tags[int_rcid].valid &&
+            bc->rcid_tags[int_rcid].req_rcid == req_rcid) {
+            return int_rcid;
+        }
+    }
+
+    return 0;
+}
+
+static int find_mcid_tag(RiscvCbqriBandwidthState *bc, uint16_t mcid)
+{
+    uint32_t counter;
+
+    for (counter = 0; counter < bc->nb_mcids; counter++) {
+        if (bc->mon_counters[counter].tag_valid &&
+            bc->mon_counters[counter].mcid_tag == mcid) {
+            return counter;
+        }
+    }
+
+    return -1;
+}
+
+static int find_free_counter(RiscvCbqriBandwidthState *bc)
+{
+    uint32_t counter;
+
+    for (counter = 0; counter < bc->nb_mcids; counter++) {
+        if (!bc->mon_counters[counter].tag_valid) {
+            return counter;
+        }
+    }
+
+    return -1;
+}
+
+static void reset_identifier_maps(RiscvCbqriBandwidthState *bc)
+{
+    uint32_t counter;
+    uint32_t int_rcid;
+
+    memset(bc->mon_counters, 0, sizeof(*bc->mon_counters) * bc->nb_mcids);
+    if (bc->supports_mcid_map) {
+        for (counter = 0; counter < bc->nb_mcids; counter++) {
+            bc->mon_counters[counter].mcid_tag = counter;
+            bc->mon_counters[counter].tag_valid = true;
+        }
+    }
+    memset(bc->rcid_tags, 0, sizeof(*bc->rcid_tags) * bc->nb_rcids);
+    if (!bc->supports_rcid_map) {
+        return;
+    }
+
+    for (int_rcid = 1; int_rcid < bc->nb_rcids; int_rcid++) {
+        bc->rcid_tags[int_rcid].req_rcid = int_rcid;
+        bc->rcid_tags[int_rcid].valid = true;
+    }
+}
+
 static uint64_t bandwidth_reserved_sum(RiscvCbqriBandwidthState *bc)
 {
     unsigned int nb_ats = get_num_ats(bc);
@@ -206,6 +311,10 @@ static uint64_t bandwidth_reserved_sum(RiscvCbqriBandwidthState *bc)
     uint32_t at;
 
     for (rcid = 0; rcid < bc->nb_rcids; rcid++) {
+        if (rcid != 0 && bc->supports_rcid_map &&
+            !bc->rcid_tags[rcid].valid) {
+            continue;
+        }
         for (at = 0; at < nb_ats; at++) {
             BandwidthAllocation *alloc = get_bw_alloc(bc, rcid, at);
 
@@ -225,6 +334,10 @@ static uint32_t bandwidth_config(RiscvCbqriBandwidthState *bc,
     BandwidthAllocation *bw_alloc = get_bw_alloc(bc, rcid, at);
     BandwidthAllocation *new_alloc = &bc->bw_allocations[0];
     uint64_t reserved = bandwidth_reserved_sum(bc);
+    bool entry_active;
+
+    entry_active = !bc->supports_rcid_map || rcid == 0 ||
+                   bc->rcid_tags[rcid].valid;
 
     /*
      * Bandwidth is allocated in multiples of bandwidth blocks, and the
@@ -237,10 +350,10 @@ static uint32_t bandwidth_config(RiscvCbqriBandwidthState *bc,
         }
     }
 
-    if (!bw_alloc->useShared) {
+    if (entry_active && !bw_alloc->useShared) {
         reserved -= bw_alloc->Rbwb;
     }
-    if (!new_alloc->useShared) {
+    if (entry_active && !new_alloc->useShared) {
         if (new_alloc->Rbwb > bc->mrbwb) {
             return BC_ALLOC_STATUS_INVAL_BLKS;
         }
@@ -282,6 +395,8 @@ static bool is_valid_at(RiscvCbqriBandwidthState *bc, uint32_t at)
 static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
                                          uint64_t value)
 {
+    MonitorCounter *counter = NULL;
+    int counter_id = -1;
     if (!bc->supports_mon_op_config_event &&
         !bc->supports_mon_op_read_counter) {
         /* monitoring not supported: leave mon_ctl set to 0 */
@@ -313,13 +428,25 @@ static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
         atv = false;
     }
 
-    if (mcid >= bc->nb_mcids) {
+    if (bc->supports_mcid_map) {
+        counter_id = find_mcid_tag(bc, mcid);
+    } else if (mcid < bc->nb_mcids) {
+        counter_id = mcid;
+    }
+
+    if (!bc->supports_mcid_map && mcid >= bc->nb_mcids) {
         status = BC_MON_CTL_STATUS_INVAL_MCID;
     } else if (op == BC_MON_OP_CONFIG_EVENT &&
                bc->supports_mon_op_config_event) {
         if (evt_id == BC_EVT_ID_None &&
             bc->supports_mon_evt_id_none) {
-            bc->mon_counters[mcid].active = false;
+            if (counter_id >= 0) {
+                counter = &bc->mon_counters[counter_id];
+                counter->active = false;
+                if (bc->supports_mcid_map) {
+                    counter->tag_valid = false;
+                }
+            }
             status = BC_MON_CTL_STATUS_SUCCESS;
         } else if ((evt_id == BC_EVT_ID_RDWR_count &&
                     bc->supports_mon_evt_id_rdwr_count) ||
@@ -330,11 +457,23 @@ static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
             if (atv && !is_valid_at(bc, at)) {
                 status = BC_MON_CTL_STATUS_INVAL_AT;
             } else {
-                bc->mon_counters[mcid].ctr_val =
+                if (counter_id < 0 && bc->supports_mcid_map) {
+                    counter_id = find_free_counter(bc);
+                }
+                if (counter_id < 0) {
+                    status = BC_MON_CTL_STATUS_NO_COUNTER;
+                    goto done;
+                }
+                counter = &bc->mon_counters[counter_id];
+                counter->ctr_val =
                     FIELD_DP64(0, BC_MON_CTR_VAL, INVALID, 1);
-                bc->mon_counters[mcid].evt_id = evt_id;
-                bc->mon_counters[mcid].at = atv ? at : -1;
-                bc->mon_counters[mcid].active = true;
+                counter->evt_id = evt_id;
+                counter->at = atv ? at : -1;
+                counter->active = true;
+                if (bc->supports_mcid_map) {
+                    counter->mcid_tag = mcid;
+                    counter->tag_valid = true;
+                }
                 status = BC_MON_CTL_STATUS_SUCCESS;
             }
         } else {
@@ -342,12 +481,19 @@ static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
         }
     } else if (op == BC_MON_OP_READ_COUNTER &&
                bc->supports_mon_op_read_counter) {
-        bc->bc_mon_ctr_val = bc->mon_counters[mcid].ctr_val;
-        status = BC_MON_CTL_STATUS_SUCCESS;
+        if (counter_id < 0) {
+            bc->bc_mon_ctr_val =
+                FIELD_DP64(0, BC_MON_CTR_VAL, INVALID, 1);
+            status = BC_MON_CTL_STATUS_NO_COUNTER;
+        } else {
+            bc->bc_mon_ctr_val = bc->mon_counters[counter_id].ctr_val;
+            status = BC_MON_CTL_STATUS_SUCCESS;
+        }
     } else {
         status = BC_MON_CTL_STATUS_INVAL_OP;
     }
 
+done:
     /* reconstruct updated register value */
     value = 0;
     value = FIELD_DP64(value, BC_MON_CTL, OP, op);
@@ -358,6 +504,79 @@ static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
     value = FIELD_DP64(value, BC_MON_CTL, STATUS, status);
     value = FIELD_DP64(value, BC_MON_CTL, BUSY, busy);
     bc->bc_mon_ctl = value;
+}
+
+static void riscv_cbqri_bc_write_rcid_map_ctl(
+    RiscvCbqriBandwidthState *bc, uint64_t value)
+{
+    uint32_t op = FIELD_EX64(value, BC_RCID_MAP_CTL, OP);
+    uint32_t req_rcid = FIELD_EX64(value, BC_RCID_MAP_CTL, REQ_RCID);
+    uint32_t int_rcid = FIELD_EX64(value, BC_RCID_MAP_CTL, INT_RCID);
+    uint32_t status = BC_RCID_MAP_STATUS_SUCCESS;
+    uint64_t reserved;
+    uint32_t at;
+    int old_int_rcid;
+
+    if (!bc->supports_rcid_map) {
+        return;
+    }
+
+    if (op == BC_RCID_MAP_OP_READ) {
+        int_rcid = find_rcid_tag(bc, req_rcid);
+    } else if (op == BC_RCID_MAP_OP_CONFIG) {
+        if (req_rcid == 0 && int_rcid != 0) {
+            status = BC_RCID_MAP_STATUS_INVAL_REQ_RCID;
+        } else if (int_rcid >= bc->nb_rcids) {
+            status = BC_RCID_MAP_STATUS_INVAL_INT_RCID;
+        } else if (int_rcid != 0 && bc->rcid_tags[int_rcid].valid &&
+                   bc->rcid_tags[int_rcid].req_rcid != req_rcid) {
+            status = BC_RCID_MAP_STATUS_INT_RCID_BUSY;
+        } else {
+            old_int_rcid = find_rcid_tag(bc, req_rcid);
+            reserved = bandwidth_reserved_sum(bc);
+            if (old_int_rcid != 0 && old_int_rcid != int_rcid) {
+                for (at = 0; at < get_num_ats(bc); at++) {
+                    BandwidthAllocation *alloc;
+
+                    alloc = get_bw_alloc(bc, old_int_rcid, at);
+                    if (!alloc->useShared) {
+                        reserved -= alloc->Rbwb;
+                    }
+                }
+            }
+            if (int_rcid != 0 && !bc->rcid_tags[int_rcid].valid) {
+                for (at = 0; at < get_num_ats(bc); at++) {
+                    BandwidthAllocation *alloc;
+
+                    alloc = get_bw_alloc(bc, int_rcid, at);
+                    if (!alloc->useShared) {
+                        reserved += alloc->Rbwb;
+                    }
+                }
+            }
+            if (reserved > bc->mrbwb) {
+                status = BC_RCID_MAP_STATUS_CONSTRAINT;
+                goto done;
+            }
+            if (old_int_rcid != 0) {
+                bc->rcid_tags[old_int_rcid].valid = false;
+            }
+            if (int_rcid != 0) {
+                bc->rcid_tags[int_rcid].req_rcid = req_rcid;
+                bc->rcid_tags[int_rcid].valid = true;
+            }
+        }
+    } else {
+        status = BC_RCID_MAP_STATUS_INVAL_OP;
+    }
+
+done:
+    value = 0;
+    value = FIELD_DP64(value, BC_RCID_MAP_CTL, OP, op);
+    value = FIELD_DP64(value, BC_RCID_MAP_CTL, REQ_RCID, req_rcid);
+    value = FIELD_DP64(value, BC_RCID_MAP_CTL, INT_RCID, int_rcid);
+    value = FIELD_DP64(value, BC_RCID_MAP_CTL, STATUS, status);
+    bc->bc_rcid_map_ctl = value;
 }
 
 static void riscv_cbqri_bc_write_alloc_ctl(RiscvCbqriBandwidthState *bc,
@@ -465,6 +684,9 @@ static void riscv_cbqri_bc_write(void *opaque, hwaddr addr,
     case A_BC_BW_ALLOC:
         riscv_cbqri_bc_write_bw_alloc(bc, value);
         break;
+    case A_BC_RCID_MAP_CTL:
+        riscv_cbqri_bc_write_rcid_map_ctl(bc, value);
+        break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: out of bounds (addr=0x%x)",
@@ -481,7 +703,10 @@ static uint64_t riscv_cbqri_bc_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case A_BC_CAPABILITIES:
-        if (bc->supports_inactive_entry) {
+        if (bc->supports_rcid_map || bc->supports_mcid_map) {
+            value = FIELD_DP64(value, BC_CAPABILITIES, VER,
+                               CBQRI_ID_MAP_VERSION);
+        } else if (bc->supports_inactive_entry) {
             value = FIELD_DP64(value, BC_CAPABILITIES, VER,
                                CBQRI_INACTIVE_ENTRY_VERSION);
         } else {
@@ -494,6 +719,10 @@ static uint64_t riscv_cbqri_bc_read(void *opaque, hwaddr addr, unsigned size)
         value = FIELD_DP64(value, BC_CAPABILITIES, P, 0);
         value = FIELD_DP64(value, BC_CAPABILITIES, NBWBLKS, bc->nbwblks);
         value = FIELD_DP64(value, BC_CAPABILITIES, MRBWB, bc->mrbwb);
+        value = FIELD_DP64(value, BC_CAPABILITIES, RCID_MAP,
+                           bc->supports_rcid_map);
+        value = FIELD_DP64(value, BC_CAPABILITIES, MCID_MAP,
+                           bc->supports_mcid_map);
         break;
     case A_BC_MON_CTL:
         value = bc->bc_mon_ctl;
@@ -511,6 +740,9 @@ static uint64_t riscv_cbqri_bc_read(void *opaque, hwaddr addr, unsigned size)
         value = FIELD_DP64(value, BC_BW_ALLOC, sharedAT, bc_bw_alloc->sharedAT);
         value = FIELD_DP64(value, BC_BW_ALLOC, useShared,
                            bc_bw_alloc->useShared);
+        break;
+    case A_BC_RCID_MAP_CTL:
+        value = bc->bc_rcid_map_ctl;
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -577,6 +809,10 @@ static void riscv_cbqri_bc_realize(DeviceState *dev, Error **errp)
     bw_alloc_size = 1 + bc->nb_rcids * get_num_ats(bc);
     bc->bw_allocations = g_new0(BandwidthAllocation, bw_alloc_size);
 
+    assert(bc->rcid_tags == NULL);
+    bc->rcid_tags = g_new0(RcidTag, bc->nb_rcids);
+    reset_identifier_maps(bc);
+
     memory_region_init_io(&bc->mmio, OBJECT(dev), &riscv_cbqri_bc_ops,
                           bc, TYPE_RISCV_CBQRI_BC".mmio", 4 * 1024);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &bc->mmio);
@@ -589,6 +825,9 @@ static void riscv_cbqri_bc_reset(DeviceState *dev)
 
     bc->bc_mon_ctl = 0;
     bc->bc_alloc_ctl = 0;
+    bc->bc_rcid_map_ctl = 0;
+
+    reset_identifier_maps(bc);
 }
 
 static const Property riscv_cbqri_bc_properties[] = {
@@ -612,6 +851,10 @@ static const Property riscv_cbqri_bc_properties[] = {
 
     DEFINE_PROP_BOOL("inactive-entry", RiscvCbqriBandwidthState,
                      supports_inactive_entry, false),
+    DEFINE_PROP_BOOL("rcid-map", RiscvCbqriBandwidthState,
+                     supports_rcid_map, false),
+    DEFINE_PROP_BOOL("mcid-map", RiscvCbqriBandwidthState,
+                     supports_mcid_map, false),
 
     DEFINE_PROP_BOOL("mon_op_config_event", RiscvCbqriBandwidthState,
                      supports_mon_op_config_event, true),
@@ -674,6 +917,8 @@ DeviceState *riscv_cbqri_bc_create(hwaddr addr,
                       caps->supports_alloc_op_read_limit);
     qdev_prop_set_bit(dev, "inactive-entry",
                       caps->supports_inactive_entry);
+    qdev_prop_set_bit(dev, "rcid-map", caps->supports_rcid_map);
+    qdev_prop_set_bit(dev, "mcid-map", caps->supports_mcid_map);
     qdev_prop_set_bit(dev, "mon_op_config_event",
                       caps->supports_mon_op_config_event);
     qdev_prop_set_bit(dev, "mon_op_read_counter",

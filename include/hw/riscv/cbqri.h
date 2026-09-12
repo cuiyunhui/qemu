@@ -42,6 +42,8 @@ typedef struct RiscvCbqriCapacityCaps {
     bool supports_alloc_op_config_limit:1;
     bool supports_alloc_op_read_limit:1;
     bool supports_alloc_op_flush_rcid:1;
+    bool supports_rcid_map:1;
+    bool supports_mcid_map:1;
 
     bool supports_mon_op_config_event:1;
     bool supports_mon_op_read_counter:1;
@@ -64,6 +66,8 @@ typedef struct RiscvCbqriBandwidthCaps {
     bool supports_alloc_op_config_limit:1;
     bool supports_alloc_op_read_limit:1;
     bool supports_inactive_entry:1;
+    bool supports_rcid_map:1;
+    bool supports_mcid_map:1;
 
     bool supports_mon_op_config_event:1;
     bool supports_mon_op_read_counter:1;

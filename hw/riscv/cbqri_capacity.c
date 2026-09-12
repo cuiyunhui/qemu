@@ -31,6 +31,8 @@
 #include "target/riscv/cpu.h"
 #include "hw/riscv/cbqri.h"
 
+#define CBQRI_ID_MAP_VERSION 0x12
+
 /* Encodings of `AT` field */
 enum {
     CC_AT_DATA = 0,
@@ -47,6 +49,8 @@ FIELD(CC_CAPABILITIES, FRCID, 24, 1);
 FIELD(CC_CAPABILITIES, CUNITS, 25, 1);
 FIELD(CC_CAPABILITIES, RPFX, 26,  1);
 FIELD(CC_CAPABILITIES, P, 27, 4);
+FIELD(CC_CAPABILITIES, RCID_MAP, 62, 1);
+FIELD(CC_CAPABILITIES, MCID_MAP, 63, 1);
 
 /* Usage monitoring control */
 REG64(CC_MON_CTL, 8);
@@ -77,6 +81,7 @@ enum {
     CC_MON_CTL_STATUS_INVAL_MCID = 3,
     CC_MON_CTL_STATUS_INVAL_EVT_ID = 4,
     CC_MON_CTL_STATUS_INVAL_AT = 5,
+    CC_MON_CTL_STATUS_NO_COUNTER = 6,
 };
 
 /* Monitoring counter value */
@@ -110,13 +115,40 @@ enum {
 
 REG64(CC_BLOCK_MASK, 32);
 
+/* Sparse RCID mapping control uses the slot following CC_CUNITS. */
+FIELD(CC_RCID_MAP_CTL, OP, 0, 5);
+FIELD(CC_RCID_MAP_CTL, REQ_RCID, 8, 12);
+FIELD(CC_RCID_MAP_CTL, INT_RCID, 20, 12);
+FIELD(CC_RCID_MAP_CTL, STATUS, 32, 7);
+FIELD(CC_RCID_MAP_CTL, BUSY, 39, 1);
+
+enum {
+    CC_RCID_MAP_OP_CONFIG = 1,
+    CC_RCID_MAP_OP_READ = 2,
+};
+
+enum {
+    CC_RCID_MAP_STATUS_SUCCESS = 1,
+    CC_RCID_MAP_STATUS_INVAL_OP = 2,
+    CC_RCID_MAP_STATUS_INVAL_REQ_RCID = 3,
+    CC_RCID_MAP_STATUS_INVAL_INT_RCID = 4,
+    CC_RCID_MAP_STATUS_INT_RCID_BUSY = 5,
+};
+
 
 typedef struct MonitorCounter {
     uint64_t ctr_val;
+    uint16_t mcid_tag;
     int at;
     int evt_id;
     bool active;
+    bool tag_valid;
 } MonitorCounter;
+
+typedef struct RcidTag {
+    uint16_t req_rcid;
+    bool valid;
+} RcidTag;
 
 typedef struct RiscvCbqriCapacityState {
     SysBusDevice parent_obj;
@@ -126,9 +158,11 @@ typedef struct RiscvCbqriCapacityState {
     uint64_t cc_mon_ctl;
     uint64_t cc_mon_ctr_val;
     uint64_t cc_alloc_ctl;
+    uint64_t cc_rcid_map_ctl;
 
     /* monitoring counters */
     MonitorCounter *mon_counters;
+    RcidTag *rcid_tags;
 
     /* allocation blockmasks (1st one is the CC_BLOCK_MASK register) */
     uint64_t *alloc_blockmasks;
@@ -147,6 +181,8 @@ typedef struct RiscvCbqriCapacityState {
     bool supports_alloc_op_config_limit;
     bool supports_alloc_op_read_limit;
     bool supports_alloc_op_flush_rcid;
+    bool supports_rcid_map;
+    bool supports_mcid_map;
 
     bool supports_mon_op_config_event;
     bool supports_mon_op_read_counter;
@@ -248,6 +284,75 @@ static uint64_t *get_blockmask_location(RiscvCbqriCapacityState *cc,
     return cc->alloc_blockmasks + blockmask_offset;
 }
 
+static hwaddr get_rcid_map_offset(RiscvCbqriCapacityState *cc)
+{
+    return A_CC_BLOCK_MASK + get_slots(cc) * 8 + 8;
+}
+
+static int find_rcid_tag(RiscvCbqriCapacityState *cc, uint16_t req_rcid)
+{
+    uint32_t int_rcid;
+
+    if (req_rcid == 0) {
+        return 0;
+    }
+    for (int_rcid = 1; int_rcid < cc->nb_rcids; int_rcid++) {
+        if (cc->rcid_tags[int_rcid].valid &&
+            cc->rcid_tags[int_rcid].req_rcid == req_rcid) {
+            return int_rcid;
+        }
+    }
+    return 0;
+}
+
+static int find_mcid_tag(RiscvCbqriCapacityState *cc, uint16_t mcid)
+{
+    uint32_t counter;
+
+    for (counter = 0; counter < cc->nb_mcids; counter++) {
+        if (cc->mon_counters[counter].tag_valid &&
+            cc->mon_counters[counter].mcid_tag == mcid) {
+            return counter;
+        }
+    }
+    return -1;
+}
+
+static int find_free_counter(RiscvCbqriCapacityState *cc)
+{
+    uint32_t counter;
+
+    for (counter = 0; counter < cc->nb_mcids; counter++) {
+        if (!cc->mon_counters[counter].tag_valid) {
+            return counter;
+        }
+    }
+    return -1;
+}
+
+static void reset_identifier_maps(RiscvCbqriCapacityState *cc)
+{
+    uint32_t counter;
+    uint32_t int_rcid;
+
+    memset(cc->mon_counters, 0, sizeof(*cc->mon_counters) * cc->nb_mcids);
+    if (cc->supports_mcid_map) {
+        for (counter = 0; counter < cc->nb_mcids; counter++) {
+            cc->mon_counters[counter].mcid_tag = counter;
+            cc->mon_counters[counter].tag_valid = true;
+        }
+    }
+    memset(cc->rcid_tags, 0, sizeof(*cc->rcid_tags) * cc->nb_rcids);
+    if (!cc->supports_rcid_map) {
+        return;
+    }
+
+    for (int_rcid = 1; int_rcid < cc->nb_rcids; int_rcid++) {
+        cc->rcid_tags[int_rcid].req_rcid = int_rcid;
+        cc->rcid_tags[int_rcid].valid = true;
+    }
+}
+
 static uint32_t alloc_blockmask_config(RiscvCbqriCapacityState *cc,
                                        uint32_t rcid, uint32_t at,
                                        bool *busy)
@@ -309,6 +414,8 @@ static bool is_valid_at(RiscvCbqriCapacityState *cc, uint32_t at)
 static void riscv_cbqri_cc_write_mon_ctl(RiscvCbqriCapacityState *cc,
                                          uint64_t value)
 {
+    MonitorCounter *counter = NULL;
+    int counter_id = -1;
     if (!cc->supports_mon_op_config_event &&
         !cc->supports_mon_op_read_counter) {
         /* monitoring not supported: leave mon_ctl set to 0 */
@@ -340,24 +447,48 @@ static void riscv_cbqri_cc_write_mon_ctl(RiscvCbqriCapacityState *cc,
         atv = false;
     }
 
-    if (mcid >= cc->nb_mcids) {
+    if (cc->supports_mcid_map) {
+        counter_id = find_mcid_tag(cc, mcid);
+    } else if (mcid < cc->nb_mcids) {
+        counter_id = mcid;
+    }
+
+    if (!cc->supports_mcid_map && mcid >= cc->nb_mcids) {
         status = CC_MON_CTL_STATUS_INVAL_MCID;
     } else if (op == CC_MON_OP_CONFIG_EVENT &&
                cc->supports_mon_op_config_event) {
         if (evt_id == CC_EVT_ID_None &&
             cc->supports_mon_evt_id_none) {
-            cc->mon_counters[mcid].active = false;
+            if (counter_id >= 0) {
+                counter = &cc->mon_counters[counter_id];
+                counter->active = false;
+                if (cc->supports_mcid_map) {
+                    counter->tag_valid = false;
+                }
+            }
             status = CC_MON_CTL_STATUS_SUCCESS;
         } else if (evt_id == CC_EVT_ID_Occupancy &&
                    cc->supports_mon_evt_id_occupancy) {
             if (atv && !is_valid_at(cc, at)) {
                 status = CC_MON_CTL_STATUS_INVAL_AT;
             } else {
-                cc->mon_counters[mcid].ctr_val =
+                if (counter_id < 0 && cc->supports_mcid_map) {
+                    counter_id = find_free_counter(cc);
+                }
+                if (counter_id < 0) {
+                    status = CC_MON_CTL_STATUS_NO_COUNTER;
+                    goto done;
+                }
+                counter = &cc->mon_counters[counter_id];
+                counter->ctr_val =
                     FIELD_DP64(0, CC_MON_CTR_VAL, INVALID, 1);
-                cc->mon_counters[mcid].evt_id = evt_id;
-                cc->mon_counters[mcid].at = atv ? at : -1;
-                cc->mon_counters[mcid].active = true;
+                counter->evt_id = evt_id;
+                counter->at = atv ? at : -1;
+                counter->active = true;
+                if (cc->supports_mcid_map) {
+                    counter->mcid_tag = mcid;
+                    counter->tag_valid = true;
+                }
                 status = CC_MON_CTL_STATUS_SUCCESS;
             }
         } else {
@@ -365,12 +496,19 @@ static void riscv_cbqri_cc_write_mon_ctl(RiscvCbqriCapacityState *cc,
         }
     } else if (op == CC_MON_OP_READ_COUNTER &&
                cc->supports_mon_op_read_counter) {
-        cc->cc_mon_ctr_val = cc->mon_counters[mcid].ctr_val;
-        status = CC_MON_CTL_STATUS_SUCCESS;
+        if (counter_id < 0) {
+            cc->cc_mon_ctr_val =
+                FIELD_DP64(0, CC_MON_CTR_VAL, INVALID, 1);
+            status = CC_MON_CTL_STATUS_NO_COUNTER;
+        } else {
+            cc->cc_mon_ctr_val = cc->mon_counters[counter_id].ctr_val;
+            status = CC_MON_CTL_STATUS_SUCCESS;
+        }
     } else {
         status = CC_MON_CTL_STATUS_INVAL_OP;
     }
 
+done:
     /* reconstruct updated register value */
     value = 0;
     value = FIELD_DP64(value, CC_MON_CTL, OP, op);
@@ -381,6 +519,50 @@ static void riscv_cbqri_cc_write_mon_ctl(RiscvCbqriCapacityState *cc,
     value = FIELD_DP64(value, CC_MON_CTL, STATUS, status);
     value = FIELD_DP64(value, CC_MON_CTL, BUSY, busy);
     cc->cc_mon_ctl = value;
+}
+
+static void riscv_cbqri_cc_write_rcid_map_ctl(
+    RiscvCbqriCapacityState *cc, uint64_t value)
+{
+    uint32_t op = FIELD_EX64(value, CC_RCID_MAP_CTL, OP);
+    uint32_t req_rcid = FIELD_EX64(value, CC_RCID_MAP_CTL, REQ_RCID);
+    uint32_t int_rcid = FIELD_EX64(value, CC_RCID_MAP_CTL, INT_RCID);
+    uint32_t status = CC_RCID_MAP_STATUS_SUCCESS;
+    int old_int_rcid;
+
+    if (!cc->supports_rcid_map) {
+        return;
+    }
+    if (op == CC_RCID_MAP_OP_READ) {
+        int_rcid = find_rcid_tag(cc, req_rcid);
+    } else if (op == CC_RCID_MAP_OP_CONFIG) {
+        if (req_rcid == 0 && int_rcid != 0) {
+            status = CC_RCID_MAP_STATUS_INVAL_REQ_RCID;
+        } else if (int_rcid >= cc->nb_rcids) {
+            status = CC_RCID_MAP_STATUS_INVAL_INT_RCID;
+        } else if (int_rcid != 0 && cc->rcid_tags[int_rcid].valid &&
+                   cc->rcid_tags[int_rcid].req_rcid != req_rcid) {
+            status = CC_RCID_MAP_STATUS_INT_RCID_BUSY;
+        } else {
+            old_int_rcid = find_rcid_tag(cc, req_rcid);
+            if (old_int_rcid != 0) {
+                cc->rcid_tags[old_int_rcid].valid = false;
+            }
+            if (int_rcid != 0) {
+                cc->rcid_tags[int_rcid].req_rcid = req_rcid;
+                cc->rcid_tags[int_rcid].valid = true;
+            }
+        }
+    } else {
+        status = CC_RCID_MAP_STATUS_INVAL_OP;
+    }
+
+    value = 0;
+    value = FIELD_DP64(value, CC_RCID_MAP_CTL, OP, op);
+    value = FIELD_DP64(value, CC_RCID_MAP_CTL, REQ_RCID, req_rcid);
+    value = FIELD_DP64(value, CC_RCID_MAP_CTL, INT_RCID, int_rcid);
+    value = FIELD_DP64(value, CC_RCID_MAP_CTL, STATUS, status);
+    cc->cc_rcid_map_ctl = value;
 }
 
 static void riscv_cbqri_cc_write_alloc_ctl(RiscvCbqriCapacityState *cc,
@@ -453,8 +635,13 @@ static void riscv_cbqri_cc_write(void *opaque, hwaddr addr,
                                  uint64_t value, unsigned size)
 {
     RiscvCbqriCapacityState *cc = opaque;
+    hwaddr rcid_map_offset = get_rcid_map_offset(cc);
 
     assert((addr % 8) == 0);
+    if (addr == rcid_map_offset) {
+        riscv_cbqri_cc_write_rcid_map_ctl(cc, value);
+        return;
+    }
 
     switch (addr) {
     case A_CC_CAPABILITIES:
@@ -492,16 +679,25 @@ static void riscv_cbqri_cc_write(void *opaque, hwaddr addr,
 static uint64_t riscv_cbqri_cc_read(void *opaque, hwaddr addr, unsigned size)
 {
     RiscvCbqriCapacityState *cc = opaque;
+    hwaddr rcid_map_offset = get_rcid_map_offset(cc);
     uint64_t value = 0;
 
     assert((addr % 8) == 0);
+    if (addr == rcid_map_offset) {
+        return cc->cc_rcid_map_ctl;
+    }
 
     switch (addr) {
     case A_CC_CAPABILITIES:
-        value = FIELD_DP64(value, CC_CAPABILITIES, VER_MAJOR,
-                           RISCV_CBQRI_VERSION_MAJOR);
-        value = FIELD_DP64(value, CC_CAPABILITIES, VER_MINOR,
-                           RISCV_CBQRI_VERSION_MINOR);
+        if (cc->supports_rcid_map || cc->supports_mcid_map) {
+            value = FIELD_DP64(value, CC_CAPABILITIES, VER,
+                               CBQRI_ID_MAP_VERSION);
+        } else {
+            value = FIELD_DP64(value, CC_CAPABILITIES, VER_MAJOR,
+                               RISCV_CBQRI_VERSION_MAJOR);
+            value = FIELD_DP64(value, CC_CAPABILITIES, VER_MINOR,
+                               RISCV_CBQRI_VERSION_MINOR);
+        }
         value = FIELD_DP64(value, CC_CAPABILITIES, NCBLKS,
                            cc->ncblks);
         value = FIELD_DP64(value, CC_CAPABILITIES, FRCID,
@@ -509,6 +705,10 @@ static uint64_t riscv_cbqri_cc_read(void *opaque, hwaddr addr, unsigned size)
         value = FIELD_DP64(value, CC_CAPABILITIES, CUNITS, 0);
         value = FIELD_DP64(value, CC_CAPABILITIES, RPFX, 0);
         value = FIELD_DP64(value, CC_CAPABILITIES, P, 0);
+        value = FIELD_DP64(value, CC_CAPABILITIES, RCID_MAP,
+                           cc->supports_rcid_map);
+        value = FIELD_DP64(value, CC_CAPABILITIES, MCID_MAP,
+                           cc->supports_mcid_map);
         break;
     case A_CC_MON_CTL:
         value = cc->cc_mon_ctl;
@@ -587,8 +787,8 @@ static void riscv_cbqri_cc_realize(DeviceState *dev, Error **errp)
 {
     RiscvCbqriCapacityState *cc = RISCV_CBQRI_CC(dev);
     unsigned int bmw = get_bmw(cc);
-    /* The size of the CC registers other than bmw is 40 bytes */
-    unsigned int mmio_size = (bmw / 8) + 40;
+    /* Include CC_CUNITS and the optional RCID mapping control slot. */
+    unsigned int mmio_size = (bmw / 8) + 48;
 
     if (!cc->mmio_base) {
         error_setg(errp, "mmio_base property not set");
@@ -601,6 +801,10 @@ static void riscv_cbqri_cc_realize(DeviceState *dev, Error **errp)
     assert(cc->alloc_blockmasks == NULL);
     unsigned int blockmasks_size = get_blockmask_offset(cc, cc->nb_rcids, 0);
     cc->alloc_blockmasks = g_new0(uint64_t, blockmasks_size);
+
+    assert(cc->rcid_tags == NULL);
+    cc->rcid_tags = g_new0(RcidTag, cc->nb_rcids);
+    reset_identifier_maps(cc);
 
     memory_region_init_io(&cc->mmio, OBJECT(dev), &riscv_cbqri_cc_ops,
                           cc, TYPE_RISCV_CBQRI_CC".mmio", mmio_size);
@@ -622,6 +826,8 @@ static void riscv_cbqri_cc_reset(DeviceState *dev)
      */
     cc->cc_mon_ctl = 0;
     cc->cc_alloc_ctl = 0;
+    cc->cc_rcid_map_ctl = 0;
+    reset_identifier_maps(cc);
 
     /*
      * The capacity controllers at reset must allocate all available
@@ -659,6 +865,10 @@ static const Property riscv_cbqri_cc_properties[] = {
                      supports_alloc_op_read_limit, true),
     DEFINE_PROP_BOOL("alloc_op_flush_rcid", RiscvCbqriCapacityState,
                      supports_alloc_op_flush_rcid, true),
+    DEFINE_PROP_BOOL("rcid-map", RiscvCbqriCapacityState,
+                     supports_rcid_map, false),
+    DEFINE_PROP_BOOL("mcid-map", RiscvCbqriCapacityState,
+                     supports_mcid_map, false),
 
     DEFINE_PROP_BOOL("mon_op_config_event", RiscvCbqriCapacityState,
                      supports_mon_op_config_event, true),
@@ -716,6 +926,8 @@ DeviceState *riscv_cbqri_cc_create(hwaddr addr,
                       caps->supports_alloc_op_read_limit);
     qdev_prop_set_bit(dev, "alloc_op_flush_rcid",
                       caps->supports_alloc_op_flush_rcid);
+    qdev_prop_set_bit(dev, "rcid-map", caps->supports_rcid_map);
+    qdev_prop_set_bit(dev, "mcid-map", caps->supports_mcid_map);
     qdev_prop_set_bit(dev, "mon_op_config_event",
                       caps->supports_mon_op_config_event);
     qdev_prop_set_bit(dev, "mon_op_read_counter",
