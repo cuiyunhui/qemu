@@ -371,6 +371,7 @@ struct CPUArchState {
 
     /* Ssqosid extension */
     target_ulong srmcfg;
+    target_ulong srmcfg_assoc;
 
     /* Machine and Supervisor interrupt priorities */
     uint8_t miprio[64];
@@ -695,6 +696,7 @@ RISCVException smstateen_acc_ok(CPURISCVState *env, int index, uint64_t bit);
 
 void riscv_cpu_set_mode(CPURISCVState *env, privilege_mode_t newpriv,
                         bool virt_en);
+target_ulong riscv_cpu_effective_srmcfg(CPURISCVState *env);
 
 void riscv_ctr_add_entry(CPURISCVState *env, uint64_t src, uint64_t dst,
                          enum CTRType type, privilege_mode_t prev_priv,

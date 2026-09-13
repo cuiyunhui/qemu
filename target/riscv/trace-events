@@ -1,5 +1,7 @@
 # cpu_helper.c
 riscv_trap(uint64_t hartid, bool async, uint64_t cause, uint64_t epc, uint64_t tval, const char *desc) "hart:%"PRId64", async:%d, cause:%"PRId64", epc:0x%"PRIx64", tval:0x%"PRIx64", desc=%s"
+riscv_qos_effective_ids(uint64_t hartid, uint32_t priv, bool virt, uint32_t rcid, uint32_t mcid) "hart:%"PRId64", priv:%u, virt:%d, rcid:%u, mcid:%u"
+riscv_qos_assoc_write(uint64_t hartid, uint64_t value) "hart:%"PRId64", value:0x%08"PRIx64
 
 # pmp.c
 pmpcfg_csr_read(uint64_t mhartid, uint32_t reg_index, uint64_t val) "hart %" PRIu64 ": read reg%" PRIu32", val: 0x%" PRIx64

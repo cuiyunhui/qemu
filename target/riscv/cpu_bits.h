@@ -230,6 +230,8 @@
 
 /* Ssqosid extension */
 #define CSR_SRMCFG          0x181
+/* Experimental supervisor-mode QoS association extension */
+#define CSR_SRMCFG_ASSOC    0x182
 
 /* Supervisor-Level Window to Indirectly Accessed Registers (AIA) */
 #define CSR_SISELECT        0x150
@@ -1174,5 +1176,12 @@ typedef enum CTRType {
 /* SRMCFG CSR field masks (Ssqosid extensions) */
 #define SRMCFG_RCID                      0x00000FFF
 #define SRMCFG_MCID                      0x0FFF0000
+
+/* Supervisor-mode QoS association fields */
+#define SRMCFG_ASSOC_RCID                0x00000FFF
+#define SRMCFG_ASSOC_RCID_EN             0x00001000
+#define SRMCFG_ASSOC_MCID                0x0FFF0000
+#define SRMCFG_ASSOC_MCID_EN             0x10000000
+#define SRMCFG_ASSOC_EN                  0x80000000
 
 #endif

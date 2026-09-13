@@ -889,6 +889,36 @@ void riscv_cpu_set_mode(CPURISCVState *env, privilege_mode_t newpriv,
             riscv_cpu_update_mip(env, 0, 0);
         }
     }
+
+    if (riscv_cpu_cfg(env)->ext_ssqosassoc) {
+        target_ulong qos = riscv_cpu_effective_srmcfg(env);
+
+        trace_riscv_qos_effective_ids(env->mhartid, env->priv,
+                                      env->virt_enabled,
+                                      qos & SRMCFG_RCID,
+                                      (qos & SRMCFG_MCID) >> 16);
+    }
+}
+
+target_ulong riscv_cpu_effective_srmcfg(CPURISCVState *env)
+{
+    target_ulong qos = env->srmcfg;
+    target_ulong assoc = env->srmcfg_assoc;
+
+    if (!riscv_cpu_cfg(env)->ext_ssqosassoc || env->priv != PRV_S ||
+        env->virt_enabled || !(assoc & SRMCFG_ASSOC_EN)) {
+        return qos;
+    }
+
+    if (assoc & SRMCFG_ASSOC_RCID_EN) {
+        qos = (qos & ~SRMCFG_RCID) | (assoc & SRMCFG_ASSOC_RCID);
+    }
+
+    if (assoc & SRMCFG_ASSOC_MCID_EN) {
+        qos = (qos & ~SRMCFG_MCID) | (assoc & SRMCFG_ASSOC_MCID);
+    }
+
+    return qos;
 }
 
 /*

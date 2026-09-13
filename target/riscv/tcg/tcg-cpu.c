@@ -793,6 +793,11 @@ void riscv_cpu_validate_set_extensions(RISCVCPU *cpu, Error **errp)
         return;
     }
 
+    if (cpu->cfg.ext_ssqosassoc && !cpu->cfg.ext_ssqosid) {
+        error_setg(errp, "Ssqosassoc extension requires Ssqosid");
+        return;
+    }
+
     if (mcc->def->misa_mxl_max == MXL_RV32 && cpu->cfg.ext_svukte) {
         error_setg(errp, "svukte is not supported for RV32");
         return;

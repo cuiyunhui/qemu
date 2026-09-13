@@ -71,6 +71,19 @@ EXTRA_RUNS += run-test-misa-w
 run-test-misa-w: test-misa-w
 	$(call run-test, $<, $(QEMU) -cpu rv64$(comma)x-misa-w=true$(comma)c=true$(comma)v=true $(QEMU_OPTS)$<)
 
+EXTRA_RUNS += run-test-ssqosassoc
+run-test-ssqosassoc: test-ssqosassoc
+	$(call run-test, $<, \
+	  $(QEMU) -cpu rv64$(comma)ssqosid=true$(comma)x-ssqosassoc=true \
+	  -trace enable=riscv_qos_effective_ids$(comma)file=$<.trace \
+	  $(QEMU_OPTS)$< && \
+	  grep -q 'priv:0$(comma) virt:0$(comma) rcid:5$(comma) mcid:42' $<.trace && \
+	  grep -q 'priv:1$(comma) virt:0$(comma) rcid:1$(comma) mcid:10' $<.trace && \
+	  grep -q 'priv:1$(comma) virt:0$(comma) rcid:1$(comma) mcid:42' $<.trace && \
+	  grep -q 'priv:1$(comma) virt:0$(comma) rcid:5$(comma) mcid:42' $<.trace && \
+	  grep -q 'priv:1$(comma) virt:1$(comma) rcid:5$(comma) mcid:42' $<.trace && \
+	  rm -f $<.trace)
+
 # Test for rv128
 EXTRA_RUNS += run-test-rv128-mstatus
 run-test-rv128-mstatus: test-rv128-mstatus

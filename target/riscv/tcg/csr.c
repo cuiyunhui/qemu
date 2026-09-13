@@ -32,6 +32,7 @@
 #include "qapi/error.h"
 #include "tcg/insn-start-words.h"
 #include "internals.h"
+#include "trace.h"
 #if !defined(CONFIG_USER_ONLY)
 #include "target/riscv/tcg/debug.h"
 #endif
@@ -1830,6 +1831,33 @@ static RISCVException write_srmcfg(CPURISCVState *env, int csrno,
                                    target_ulong val, uintptr_t ra)
 {
     env->srmcfg = val & (SRMCFG_RCID | SRMCFG_MCID);
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException check_srmcfg_assoc(CPURISCVState *env, int csrno)
+{
+    if (!riscv_cpu_cfg(env)->ext_ssqosassoc ||
+        !riscv_cpu_cfg(env)->ext_ssqosid) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+
+    return check_srmcfg(env, csrno);
+}
+
+static RISCVException read_srmcfg_assoc(CPURISCVState *env, int csrno,
+                                        target_ulong *val)
+{
+    *val = env->srmcfg_assoc;
+    return RISCV_EXCP_NONE;
+}
+
+static RISCVException write_srmcfg_assoc(CPURISCVState *env, int csrno,
+                                         target_ulong val, uintptr_t ra)
+{
+    env->srmcfg_assoc = val & (SRMCFG_ASSOC_RCID | SRMCFG_ASSOC_RCID_EN |
+                               SRMCFG_ASSOC_MCID | SRMCFG_ASSOC_MCID_EN |
+                               SRMCFG_ASSOC_EN);
+    trace_riscv_qos_assoc_write(env->mhartid, env->srmcfg_assoc);
     return RISCV_EXCP_NONE;
 }
 
@@ -6192,6 +6220,8 @@ riscv_csr_operations csr_ops[CSR_TABLE_SIZE] = {
 
     /* Supervisor-Level Quality-of-Service Identifiers (Ssqosid) */
     [CSR_SRMCFG]   = { "srmcfg",  check_srmcfg, read_srmcfg, write_srmcfg },
+    [CSR_SRMCFG_ASSOC] = { "srmcfg_assoc", check_srmcfg_assoc,
+                           read_srmcfg_assoc, write_srmcfg_assoc },
 
     /* Supervisor-Level Window to Indirectly Accessed Registers (AIA) */
     [CSR_SISELECT]   = { "siselect",   csrind_or_aia_smode, NULL, NULL,
