@@ -115,12 +115,24 @@ static void test_inactive_entry(void)
     value = qtest_readq(qts, CBQRI_BASE + BC_CAPABILITIES);
     g_assert_cmphex(value & 0xff, ==, 0x11);
     g_assert_cmpuint(config_limit(qts, 4, 0, 0, 1), ==,
-                     BC_ALLOC_STATUS_INVAL_BLKS);
+                     BC_ALLOC_STATUS_SUCCESS);
+    value = read_limit(qts, 4, 0);
+    g_assert_cmphex(value, ==, bw_alloc_value(0, 1));
+
     g_assert_cmpuint(config_limit_raw(qts, 4, 0,
                      unique_alloc_value(0, 0, 1)), ==,
                      BC_ALLOC_STATUS_SUCCESS);
     value = read_limit(qts, 4, 0);
     g_assert_cmphex(value, ==, unique_alloc_value(0, 0, 1));
+
+    g_assert_cmpuint(config_limit(qts, 5, 0, 4, 0), ==,
+                     BC_ALLOC_STATUS_SUCCESS);
+    value = read_limit(qts, 5, 0);
+    g_assert_cmphex(value, ==, bw_alloc_value(4, 0));
+    g_assert_cmpuint(config_limit(qts, 5, 0, 0, 0), ==,
+                     BC_ALLOC_STATUS_SUCCESS);
+    value = read_limit(qts, 5, 0);
+    g_assert_cmphex(value, ==, bw_alloc_value(0, 0));
 
     g_assert_cmpuint(config_limit(qts, 1, 0, 6, 10), ==,
                      BC_ALLOC_STATUS_SUCCESS);

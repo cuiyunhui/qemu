@@ -227,14 +227,16 @@ static uint32_t bandwidth_config(RiscvCbqriBandwidthState *bc,
     uint64_t reserved = bandwidth_reserved_sum(bc);
 
     /*
-     * Bandwidth is allocated in multiples of bandwidth blocks, and the
-     * value in Rbwb must be at least 1 unless this controller supports the
-     * inactive-entry extension. Rbwb is ignored for shared allocations.
+     * Bandwidth is allocated in multiples of bandwidth blocks.  A unique
+     * allocation must reserve at least one block unless this controller
+     * supports zero-reserved entries.  With that extension, Mweight == 0
+     * selects an inactive entry and Mweight > 0 selects an active entry that
+     * competes only for non-reserved or unused bandwidth.  Rbwb is ignored
+     * for shared allocations.
      */
-    if (!new_alloc->useShared && new_alloc->Rbwb < 1) {
-        if (!bc->supports_inactive_entry || new_alloc->Mweight != 0) {
-            return BC_ALLOC_STATUS_INVAL_BLKS;
-        }
+    if (!new_alloc->useShared && new_alloc->Rbwb == 0 &&
+        !bc->supports_inactive_entry) {
+        return BC_ALLOC_STATUS_INVAL_BLKS;
     }
 
     if (!bw_alloc->useShared) {
