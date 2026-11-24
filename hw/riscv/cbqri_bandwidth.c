@@ -128,10 +128,12 @@ FIELD(BC_RCID_MAP_CTL, REQ_RCID, 8, 12);
 FIELD(BC_RCID_MAP_CTL, INT_RCID, 20, 12);
 FIELD(BC_RCID_MAP_CTL, STATUS, 32, 7);
 FIELD(BC_RCID_MAP_CTL, BUSY, 39, 1);
+FIELD(BC_RCID_MAP_CTL, VALID, 40, 1);
 
 enum {
     BC_RCID_MAP_OP_CONFIG = 1,
     BC_RCID_MAP_OP_READ = 2,
+    BC_RCID_MAP_OP_READ_ENTRY = 3,
 };
 
 enum {
@@ -513,6 +515,7 @@ static void riscv_cbqri_bc_write_rcid_map_ctl(
     uint32_t req_rcid = FIELD_EX64(value, BC_RCID_MAP_CTL, REQ_RCID);
     uint32_t int_rcid = FIELD_EX64(value, BC_RCID_MAP_CTL, INT_RCID);
     uint32_t status = BC_RCID_MAP_STATUS_SUCCESS;
+    bool valid = false;
     uint64_t reserved;
     uint32_t at;
     int old_int_rcid;
@@ -523,6 +526,15 @@ static void riscv_cbqri_bc_write_rcid_map_ctl(
 
     if (op == BC_RCID_MAP_OP_READ) {
         int_rcid = find_rcid_tag(bc, req_rcid);
+    } else if (op == BC_RCID_MAP_OP_READ_ENTRY) {
+        if (int_rcid >= bc->nb_rcids) {
+            status = BC_RCID_MAP_STATUS_INVAL_INT_RCID;
+        } else if (int_rcid != 0 && bc->rcid_tags[int_rcid].valid) {
+            req_rcid = bc->rcid_tags[int_rcid].req_rcid;
+            valid = true;
+        } else {
+            req_rcid = 0;
+        }
     } else if (op == BC_RCID_MAP_OP_CONFIG) {
         if (req_rcid == 0 && int_rcid != 0) {
             status = BC_RCID_MAP_STATUS_INVAL_REQ_RCID;
@@ -576,6 +588,7 @@ done:
     value = FIELD_DP64(value, BC_RCID_MAP_CTL, REQ_RCID, req_rcid);
     value = FIELD_DP64(value, BC_RCID_MAP_CTL, INT_RCID, int_rcid);
     value = FIELD_DP64(value, BC_RCID_MAP_CTL, STATUS, status);
+    value = FIELD_DP64(value, BC_RCID_MAP_CTL, VALID, valid);
     bc->bc_rcid_map_ctl = value;
 }
 

@@ -35,6 +35,7 @@
 
 #define RCID_MAP_OP_CONFIG 1
 #define RCID_MAP_OP_READ 2
+#define RCID_MAP_OP_READ_ENTRY 3
 #define RCID_MAP_STATUS_SUCCESS 1
 #define RCID_MAP_STATUS_INVAL_REQ 3
 #define RCID_MAP_STATUS_INVAL_INT 4
@@ -132,6 +133,14 @@ static uint16_t read_map(QTestState *qts, uint16_t req_rcid)
     g_assert_cmpuint(rcid_map_status(qts), ==, RCID_MAP_STATUS_SUCCESS);
     value = qtest_readq(qts, CBQRI_BASE + BC_RCID_MAP_CTL);
     return (value >> 20) & 0xfff;
+}
+
+static uint64_t read_map_entry(QTestState *qts, uint64_t offset,
+                               uint16_t int_rcid)
+{
+    qtest_writeq(qts, CBQRI_BASE + offset,
+                 rcid_map_value(RCID_MAP_OP_READ_ENTRY, 0, int_rcid));
+    return qtest_readq(qts, CBQRI_BASE + offset);
 }
 
 static uint64_t mon_ctl_value(uint8_t op, uint16_t mcid, uint8_t evt_id)
@@ -329,22 +338,40 @@ static void test_sparse_rcid_map(void)
     g_assert_true(value & (1ULL << 62));
     g_assert_true(value & (1ULL << 63));
 
+    value = read_map_entry(qts, BC_RCID_MAP_CTL, 1);
+    g_assert_cmpuint((value >> 32) & 0x7f, ==, RCID_MAP_STATUS_SUCCESS);
+    g_assert_cmpuint((value >> 8) & 0xfff, ==, 1);
+    g_assert_true(value & (1ULL << 40));
+
     g_assert_cmpuint(read_map(qts, 1), ==, 1);
     g_assert_cmpuint(read_map(qts, 20), ==, 0);
     g_assert_cmpuint(config_map(qts, 1, 0), ==,
                      RCID_MAP_STATUS_SUCCESS);
+    value = read_map_entry(qts, BC_RCID_MAP_CTL, 1);
+    g_assert_false(value & (1ULL << 40));
     g_assert_cmpuint(config_map(qts, 20, 1), ==,
                      RCID_MAP_STATUS_SUCCESS);
+    value = read_map_entry(qts, BC_RCID_MAP_CTL, 1);
+    g_assert_cmpuint((value >> 8) & 0xfff, ==, 20);
+    g_assert_true(value & (1ULL << 40));
     g_assert_cmpuint(read_map(qts, 20), ==, 1);
     g_assert_cmpuint(config_map(qts, 21, 1), ==, RCID_MAP_STATUS_BUSY);
     g_assert_cmpuint(config_map(qts, 2, 0), ==,
                      RCID_MAP_STATUS_SUCCESS);
     g_assert_cmpuint(config_map(qts, 20, 2), ==,
                      RCID_MAP_STATUS_SUCCESS);
+    value = read_map_entry(qts, BC_RCID_MAP_CTL, 1);
+    g_assert_false(value & (1ULL << 40));
+    value = read_map_entry(qts, BC_RCID_MAP_CTL, 2);
+    g_assert_cmpuint((value >> 8) & 0xfff, ==, 20);
+    g_assert_true(value & (1ULL << 40));
     g_assert_cmpuint(read_map(qts, 20), ==, 2);
     g_assert_cmpuint(config_map(qts, 21, 1), ==,
                      RCID_MAP_STATUS_SUCCESS);
     g_assert_cmpuint(config_map(qts, 22, 4), ==,
+                     RCID_MAP_STATUS_INVAL_INT);
+    value = read_map_entry(qts, BC_RCID_MAP_CTL, 4);
+    g_assert_cmpuint((value >> 32) & 0x7f, ==,
                      RCID_MAP_STATUS_INVAL_INT);
     g_assert_cmpuint(config_map(qts, 0, 1), ==,
                      RCID_MAP_STATUS_INVAL_REQ);
@@ -410,15 +437,28 @@ static void test_capacity_sparse_rcid_map(void)
     g_assert_true(value & (1ULL << 62));
     g_assert_true(value & (1ULL << 63));
 
+    value = read_map_entry(qts, CC_RCID_MAP_CTL, 1);
+    g_assert_cmpuint((value >> 32) & 0x7f, ==, RCID_MAP_STATUS_SUCCESS);
+    g_assert_cmpuint((value >> 8) & 0xfff, ==, 1);
+    g_assert_true(value & (1ULL << 40));
+
     g_assert_cmpuint(capacity_read_map(qts, 1), ==, 1);
     g_assert_cmpuint(capacity_read_map(qts, 20), ==, 0);
     g_assert_cmpuint(capacity_config_map(qts, 1, 0), ==,
                      RCID_MAP_STATUS_SUCCESS);
+    value = read_map_entry(qts, CC_RCID_MAP_CTL, 1);
+    g_assert_false(value & (1ULL << 40));
     g_assert_cmpuint(capacity_config_map(qts, 20, 1), ==,
                      RCID_MAP_STATUS_SUCCESS);
+    value = read_map_entry(qts, CC_RCID_MAP_CTL, 1);
+    g_assert_cmpuint((value >> 8) & 0xfff, ==, 20);
+    g_assert_true(value & (1ULL << 40));
     g_assert_cmpuint(capacity_read_map(qts, 20), ==, 1);
     g_assert_cmpuint(capacity_config_map(qts, 21, 1), ==,
                      RCID_MAP_STATUS_BUSY);
+    value = read_map_entry(qts, CC_RCID_MAP_CTL, 4);
+    g_assert_cmpuint((value >> 32) & 0x7f, ==,
+                     RCID_MAP_STATUS_INVAL_INT);
 
     qtest_quit(qts);
 }
