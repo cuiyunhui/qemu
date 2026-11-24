@@ -176,6 +176,7 @@ typedef struct RiscvCbqriCapacityState {
     uint16_t nb_rcids;
 
     uint16_t ncblks;
+    uint64_t counter_value;
 
     bool supports_at_data;
     bool supports_at_code;
@@ -482,8 +483,8 @@ static void riscv_cbqri_cc_write_mon_ctl(RiscvCbqriCapacityState *cc,
                     goto done;
                 }
                 counter = &cc->mon_counters[counter_id];
-                counter->ctr_val =
-                    FIELD_DP64(0, CC_MON_CTR_VAL, INVALID, 1);
+                counter->ctr_val = FIELD_DP64(0, CC_MON_CTR_VAL, CTR,
+                                              cc->counter_value);
                 counter->evt_id = evt_id;
                 counter->at = atv ? at : -1;
                 counter->active = true;
@@ -866,6 +867,8 @@ static const Property riscv_cbqri_cc_properties[] = {
     DEFINE_PROP_UINT16("max_mcids", RiscvCbqriCapacityState, nb_mcids, 256),
     DEFINE_PROP_UINT16("max_rcids", RiscvCbqriCapacityState, nb_rcids, 64),
     DEFINE_PROP_UINT16("ncblks", RiscvCbqriCapacityState, ncblks, 16),
+    DEFINE_PROP_UINT64("counter-value", RiscvCbqriCapacityState,
+                       counter_value, 0),
 
     DEFINE_PROP_BOOL("at_data", RiscvCbqriCapacityState,
                      supports_at_data, true),

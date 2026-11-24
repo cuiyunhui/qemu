@@ -191,6 +191,7 @@ typedef struct RiscvCbqriBandwidthState {
 
     uint16_t nbwblks;
     uint16_t mrbwb;
+    uint64_t counter_value;
 
     bool supports_at_data;
     bool supports_at_code;
@@ -467,8 +468,8 @@ static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
                     goto done;
                 }
                 counter = &bc->mon_counters[counter_id];
-                counter->ctr_val =
-                    FIELD_DP64(0, BC_MON_CTR_VAL, INVALID, 1);
+                counter->ctr_val = FIELD_DP64(0, BC_MON_CTR_VAL, CTR,
+                                              bc->counter_value);
                 counter->evt_id = evt_id;
                 counter->at = atv ? at : -1;
                 counter->active = true;
@@ -851,6 +852,8 @@ static const Property riscv_cbqri_bc_properties[] = {
     DEFINE_PROP_UINT16("max_rcids", RiscvCbqriBandwidthState, nb_rcids, 64),
     DEFINE_PROP_UINT16("nbwblks", RiscvCbqriBandwidthState, nbwblks, 1024),
     DEFINE_PROP_UINT16("mrbwb", RiscvCbqriBandwidthState, mrbwb, 819),
+    DEFINE_PROP_UINT64("counter-value", RiscvCbqriBandwidthState,
+                       counter_value, 0),
 
     DEFINE_PROP_BOOL("at_data", RiscvCbqriBandwidthState,
                      supports_at_data, true),
