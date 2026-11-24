@@ -3573,6 +3573,10 @@ static RISCVException write_mstateen0(CPURISCVState *env, int csrno,
         if (riscv_cpu_cfg(env)->ext_ssctr) {
             wr_mask |= SMSTATEEN0_CTR;
         }
+
+        if (riscv_cpu_cfg(env)->ext_ssqosid) {
+            wr_mask |= SMSTATEEN0_SRMCFG;
+        }
     }
 
     return write_mstateen(env, csrno, wr_mask, new_val);
@@ -3630,6 +3634,10 @@ static RISCVException write_mstateen0h(CPURISCVState *env, int csrno,
 
     if (riscv_cpu_cfg(env)->ext_ssctr) {
         wr_mask |= SMSTATEEN0_CTR;
+    }
+
+    if (riscv_cpu_cfg(env)->ext_ssqosid) {
+        wr_mask |= SMSTATEEN0_SRMCFG;
     }
 
     return write_mstateenh(env, csrno, wr_mask, new_val);
