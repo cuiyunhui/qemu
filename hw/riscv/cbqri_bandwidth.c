@@ -192,6 +192,8 @@ typedef struct RiscvCbqriBandwidthState {
     uint16_t nbwblks;
     uint16_t mrbwb;
     uint64_t counter_value;
+    uint32_t release_failures;
+    uint16_t release_fail_mcid;
 
     bool supports_at_data;
     bool supports_at_code;
@@ -445,6 +447,13 @@ static void riscv_cbqri_bc_write_mon_ctl(RiscvCbqriBandwidthState *bc,
             bc->supports_mon_evt_id_none) {
             if (counter_id >= 0) {
                 counter = &bc->mon_counters[counter_id];
+                /* Test-only failure before changing the active binding. */
+                if (counter->active && mcid == bc->release_fail_mcid &&
+                    bc->release_failures) {
+                    bc->release_failures--;
+                    status = BC_MON_CTL_STATUS_INVAL_OP;
+                    goto done;
+                }
                 counter->active = false;
                 if (bc->supports_mcid_map) {
                     counter->tag_valid = false;
@@ -854,6 +863,11 @@ static const Property riscv_cbqri_bc_properties[] = {
     DEFINE_PROP_UINT16("mrbwb", RiscvCbqriBandwidthState, mrbwb, 819),
     DEFINE_PROP_UINT64("counter-value", RiscvCbqriBandwidthState,
                        counter_value, 0),
+
+    DEFINE_PROP_UINT32("release-failures", RiscvCbqriBandwidthState,
+                       release_failures, 0),
+    DEFINE_PROP_UINT16("release-fail-mcid", RiscvCbqriBandwidthState,
+                       release_fail_mcid, 1),
 
     DEFINE_PROP_BOOL("at_data", RiscvCbqriBandwidthState,
                      supports_at_data, true),

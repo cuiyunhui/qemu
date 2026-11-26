@@ -31,6 +31,7 @@
 #define BC_MON_OP_CONFIG_EVENT 1
 #define BC_MON_OP_READ_COUNTER 2
 #define BC_MON_STATUS_SUCCESS 1
+#define BC_MON_STATUS_INVAL_OP 2
 #define BC_MON_STATUS_NO_COUNTER 6
 
 #define RCID_MAP_OP_CONFIG 1
@@ -427,6 +428,28 @@ static void test_sparse_mcid_map(void)
     qtest_quit(qts);
 }
 
+static void test_mcid_release_failure(void)
+{
+    QTestState *qts = qtest_initf(
+        "-machine virt -nodefaults -display none "
+        "-device riscv.cbqri.bandwidth,mmio_base=0x%x,max_rcids=4,"
+        "max_mcids=2,nbwblks=16,mrbwb=8,inactive-entry=on,"
+        "rcid-map=on,mcid-map=on,release-failures=1,release-fail-mcid=100",
+        CBQRI_BASE);
+
+    g_assert_cmpuint(config_event(qts, 0, 0), ==, BC_MON_STATUS_SUCCESS);
+    g_assert_cmpuint(config_event(qts, 1, 0), ==, BC_MON_STATUS_SUCCESS);
+    g_assert_cmpuint(config_event(qts, 100, 1), ==, BC_MON_STATUS_SUCCESS);
+    g_assert_cmpuint(config_event(qts, 200, 1), ==, BC_MON_STATUS_SUCCESS);
+    g_assert_cmpuint(config_event(qts, 100, 0), ==, BC_MON_STATUS_INVAL_OP);
+    g_assert_cmpuint(read_counter(qts, 100), ==, BC_MON_STATUS_SUCCESS);
+    g_assert_cmpuint(config_event(qts, 300, 1), ==, BC_MON_STATUS_NO_COUNTER);
+    g_assert_cmpuint(config_event(qts, 100, 0), ==, BC_MON_STATUS_SUCCESS);
+    g_assert_cmpuint(read_counter(qts, 100), ==, BC_MON_STATUS_NO_COUNTER);
+    g_assert_cmpuint(config_event(qts, 300, 1), ==, BC_MON_STATUS_SUCCESS);
+    qtest_quit(qts);
+}
+
 static void test_capacity_sparse_rcid_map(void)
 {
     QTestState *qts = cbqri_capacity_start_idmap();
@@ -515,6 +538,8 @@ int main(int argc, char **argv)
                        test_sparse_rcid_map);
         qtest_add_func("/riscv/cbqri/sparse-mcid-map",
                        test_sparse_mcid_map);
+        qtest_add_func("/riscv/cbqri/mcid-release-failure",
+                       test_mcid_release_failure);
         qtest_add_func("/riscv/cbqri/capacity-sparse-rcid-map",
                        test_capacity_sparse_rcid_map);
         qtest_add_func("/riscv/cbqri/capacity-sparse-mcid-map",
